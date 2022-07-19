@@ -4,20 +4,22 @@ import java.lang.RuntimeException
 
 object ChatService {
 
-    fun clearTest() {
-        chats.clear()
-        chatId = 1
-        MsgService.clear()
-    }
-
     private val chats = mutableListOf<Chat>()
     private var chatId = 1
 
     fun createMsg(fromId: Int, toId: Int, text: String = "TestMsg"): Chat {
-        val chat = chats.filter { Chat ->
-            Chat.fromId == fromId && Chat.toId == toId
-        }
-        return if (chat.isEmpty()) {
+        val chat = chats.firstOrNull() {
+            it.fromId == fromId && it.toId == toId
+        }?.let {
+            val actualChat = it
+            val message = MsgService.add(fromId = fromId, toId = toId, chatId = it.id, text = text)
+            var newMsgList = it.messages
+            newMsgList.add(message)
+            val updatedChat = updateChatUnread(it, newMsgList)
+            chats.add(updatedChat)
+            chats.remove(it)
+            updatedChat
+        } ?: let {
             val message = MsgService.add(fromId = fromId, toId = toId, chatId = chatId, text = text)
             val newChat = addChat(
                 id = chatId,
@@ -28,17 +30,9 @@ object ChatService {
             )
             chats.add(newChat)
             chatId++
-            return newChat
-        } else {
-            val actualChat = chat[0]
-            val message = MsgService.add(fromId = fromId, toId = toId, chatId = actualChat.id, text = text)
-            var newMsgList = actualChat.messages
-            newMsgList.add(message)
-            val updatedChat = updateChatUnread(actualChat, newMsgList)
-            chats.add(updatedChat)
-            chats.remove(actualChat)
-            updatedChat
+            newChat
         }
+        return chat
     }
 
     fun addChat(
@@ -75,96 +69,100 @@ object ChatService {
     fun getUnreadChatsCount(userId: Int): Int {
         val userChatList = chats.filter { Chat ->
             Chat.toId == userId
-        }
-        val unreadChatsCount = userChatList.filter { Chat ->
-            Chat.unreadChat
-        }
-        if (unreadChatsCount.isNotEmpty()) {
-            return unreadChatsCount.size
-        }
-        return 0
+        }.filter {
+            it.unreadChat
+        }.size
+        return userChatList
     }
 
     fun getUnreadChats(userId: Int): List<Chat>? {
         val userChatList = chats.filter { Chat ->
             Chat.toId == userId
-        }
-        val unreadChats = userChatList.filter { Chat ->
-            Chat.unreadChat
-        }
-        if (unreadChats.isNotEmpty()) {
-            return unreadChats
-        }
-        throw RuntimeException("Нет непрочитанных чатов")
+        }.filter {
+            it.unreadChat
+        }.ifEmpty {
+            throw RuntimeException("Нет непрочитанных чатов")
+        }.toList()
+        return userChatList
     }
 
     fun getMessages(chatId: Int): List<Msg>? {
-        val chatList = chats.filter { Chat ->
-            Chat.id == chatId
-        }
-        if (chatList.isNotEmpty()) {
-            val chat = chatList[0]
-            val messages = chat.messages
-            val inUnread = messages.filter { Msg ->
-                Msg.id > chat.inRead
-            }
-            val unreadCount = inUnread.size
-            val lastMsg = inUnread.maxOf { Msg ->
-                Msg.id
-            }
-            val updatedChat = chat.copy(
-                inRead = lastMsg,
-                unreadCount = chat.unreadCount - unreadCount,
-                unreadChat = false)
+        val chat: Chat
+        val messagesCount: Int
+        val inReadId: Int
+        val chatList = chats.asSequence().first { Chat -> Chat.id == chatId }. let {
+            chat = it
+            inReadId = it.inRead
+            messagesCount = it.unreadCount
+            it.messages
+        }.filter { Msg -> Msg.id > inReadId }
+            .take(messagesCount).ifEmpty { throw RuntimeException("Нет непрочитанных сообщений") }
 
-            chats.remove(chat)
-            chats.add(updatedChat)
-            return inUnread
+        val newInRead = chatList.maxOf { Msg ->
+            Msg.id
         }
-        throw RuntimeException("Чат не найден")
+
+        val updatedChat = chat.copy(
+            inRead = newInRead,
+            unreadCount = chat.unreadCount - messagesCount,
+            unreadChat = false,
+        )
+        chats.remove(chat)
+        chats.add(updatedChat)
+
+        return chatList
     }
 
     fun deleteMsg(chatId: Int, msgId: Int): Boolean {
-        val chat = chats.filter { Chat ->
-            Chat.id == chatId
+        var chat: Chat
+        var newMessageList: MutableList<Msg>
+
+        val message = chats.filter {
+            it.id == chatId
+        }.ifEmpty { throw IndexOutOfBoundsException("Чата не существует") }
+            .let {
+                chat = it[0]
+                newMessageList = it[0].messages
+                it[0].messages
+            }.filter{
+                it.id == msgId
+            }.ifEmpty { throw IndexOutOfBoundsException("Сообщения не существует") }
+            .first {
+                it.id == msgId
+            }
+        chats.remove(chat)
+        newMessageList.remove(message)
+        if (newMessageList.size == 0) {
+           return true
         }
-        if (chat.isEmpty()) {
-            throw IndexOutOfBoundsException("Чат не найден")
-        }
-        val chatForUpdate = chat[0]
-        val msgForDelete = chatForUpdate.messages.filter { Msg ->
-            Msg.id == msgId
-        }
-        if (msgForDelete.isEmpty()) {
-            throw IndexOutOfBoundsException("Сообщение не найдено")
-        }
-        chatForUpdate.messages.remove(msgForDelete[0])
-        if (chatForUpdate.messages.isEmpty()) {
-            chats.remove(chatForUpdate)
-            return true
-        }
+        chats.add(chat.copy(messages = newMessageList))
         return true
     }
 
     fun updateMsg(chatId: Int, msgId: Int, newText: String): Msg {
-        val chat = chats.filter { Chat ->
-            Chat.id == chatId
-        }
-        if (chat.isEmpty()) {
-            throw IndexOutOfBoundsException("Чат не найден")
-        }
-        val chatForUpdate = chat[0]
-        val msgForUpdate = chatForUpdate.messages.filter { Msg ->
-            Msg.id == msgId
-        }
-        if (msgForUpdate.isEmpty()) {
-            throw IndexOutOfBoundsException("Сообщение не найдено")
-        }
-        val newMsg = msgForUpdate[0].copy(text = newText)
-        chatForUpdate.messages.remove(msgForUpdate[0])
-        chatForUpdate.messages.add(newMsg)
+        var chat: Chat
+        var newMessageList: MutableList<Msg>
+        val message = chats.filter {
+            it.id == chatId
+        }.ifEmpty { throw IndexOutOfBoundsException("Чата не существует") }
+            .let {
+                chat = it[0]
+                newMessageList = it[0].messages
+                it[0].messages
+            }.filter{
+                it.id == msgId
+            }.ifEmpty { throw IndexOutOfBoundsException("Сообщения не существует") }
+            .first {
+                it.id == msgId
+            }
 
-        return newMsg
+        val newMessage = message.copy(text = newText)
+        newMessageList.add(newMessage)
+        newMessageList.remove(message)
+        chats.remove(chat)
+        chats.add(chat.copy(messages = newMessageList))
+        return newMessage
+
     }
 
     fun deleteChat(chatId: Int): Boolean {
@@ -177,6 +175,12 @@ object ChatService {
         } else {
             throw Exception("Чат не найден")
         }
+    }
+
+    fun clearTest() {
+        chats.clear()
+        chatId = 1
+        MsgService.clear()
     }
 
 }
